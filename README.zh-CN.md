@@ -4,13 +4,13 @@
 
 # KaPin
 
-**Linux X11 上的 PixPin 平替**
+**Linux X11 上好用的截图方案**
 
 截图 · 长截图 · OCR 取词 · 钉图 · 标注 · 录屏
 
-面向 Linux X11，把截图、标注、提取文字和贴图参考放进同一个工作流。
+一个常驻托盘的轻量工具，覆盖 X11 桌面上的日常截图流程 —— 截下来、标清楚、取走文字、贴在屏幕边上。
 
-[English](README.md) · [快速开始](#快速开始) · [功能](#功能) · [反馈问题](https://github.com/CyberAn-Dev/kapture-dev/issues)
+[English](README.md) · [快速开始](#快速开始) · [功能](#功能) · [反馈问题](https://github.com/CyberAn-Dev/KaPin/issues)
 
 ![Platform](https://img.shields.io/badge/Linux-X11-3776ab)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -42,12 +42,15 @@
 
 </details>
 
-## 熟悉的截图工作流
+## 截图、标注、贴图，一条链走完
 
-- **截下来，标清楚**：每次截图都直接进入原位编辑。框选或吸附窗口，添加箭头、序号和马赛克，复制或保存；需要更大空间时再打开完整编辑器。
-- **图片里的字，直接拿走**：打开完整编辑器时默认自动 OCR，也可在图片中拖选取词，或框选屏幕直接复制文字。
-- **参考图，贴在手边**：钉住剪贴板图片，缩放、调透明度，一边看一边工作。
-- **一屏不够，继续滚动**：在红框中自动或手动采集长图，实时预览，上下往返不重复追加已采集内容。
+KaPin 把整套截图流程收在一个工具里，原生跑在 X11 桌面上：
+
+- **截完就地标注。** 框选区域或点击窗口后，选区立刻可编辑 —— 箭头、序号、马赛克、文字，不必先打开另一个窗口。Enter 复制，Esc 取消。
+- **图片里的字直接拿走。** 进入完整编辑器时默认自动 OCR，也能在图上拖选取词，或框选屏幕区域把文字直接送进剪贴板。
+- **参考图贴在手边。** 把剪贴板图片钉在最上层，滚轮缩放、Ctrl+滚轮调透明度，钉图本身也能标注，识别出的文字拖选即可复制。
+- **一屏不够就滚动。** 长截图把红框区域拼成一张长图，支持手动和自动滚动，实时预览且不会重复追加已采集的内容。
+- **静图不够就录。** 选区旁边直接出录屏工具条：帧率、分辨率、倒计时、时长下拉选择，结束后导出 MP4、GIF 或 MKV。
 
 ## 功能
 
@@ -71,24 +74,15 @@
 ### 从源码安装
 
 ```bash
-git clone https://github.com/CyberAn-Dev/kapture-dev.git
-cd kapture-dev
+git clone https://github.com/CyberAn-Dev/KaPin.git
+cd KaPin
 bash install.sh
 ./run.sh
 ```
 
 脚本会安装系统依赖并添加应用菜单入口。启动器依赖源码目录，请保留该目录。
 
-### 可选：构建 `.deb`
-
-```bash
-bash build_deb.sh 1.1.0
-sudo apt install ./dist/kapture_1.1.0_all.deb
-```
-
-`1.1.0` 是示例版本号，软件包从当前源码目录构建。安装后运行 `kapture`；卸载使用 `sudo apt remove kapture`。
-
-[上游 Releases](https://github.com/ycwei5/kapture/releases) 提供上游版本，可能不包含本 fork 的改动。
+本仓库的 Releases 即为 KaPin 自己的版本；包名与命令仍为 `kapture`，老用户升级无缝。
 
 <details>
 <summary>界面与设置</summary>
@@ -124,16 +118,9 @@ GNOME 启动时恢复已保存的快捷键，有冲突可在设置中修改。�
 
 历史保存在本机，重启可恢复：最多 10 张带时间戳的截图和 10 张剪贴板图片；每类另有 4000 万总像素预算，最新单张始终保留。历史窗口可清空两类记录。
 
-## 命令行
+## 使用须知
 
-使用 `./run.sh <选项>` 执行一个操作，例如 `./run.sh --region`。
-
-- 截图：`--region`、`--window`、`--scroll`、`--manual`、`--repeat`
-- 其他：`--pin1`、`--pin2`、`--color`、`--record`、`--settings`、`--show`、`--background`
-
-## 与 PixPin 的区别
-
-KaPin 是基于 [Kapture](https://github.com/ycwei5/kapture) 衍生的独立开源项目，与 [PixPin](https://pixpin.cn/) 无隶属关系。它是面向 Linux X11 的 PixPin 日常截图工作流平替：原位编辑、OCR、长截图、钉图和录屏集中在一个应用中，但整体功能范围更窄。目前不提供 OCR 翻译、二维码识别或录屏音频。
+KaPin 是独立的开源项目，聚焦核心截图流程 —— 原位编辑、OCR、长截图、钉图和录屏集中在一个应用中，并保持这一范围精简。目前不提供 OCR 翻译、二维码识别或录屏音频。
 
 - 仅支持 X11，暂不支持 Wayland。GNOME 和 KDE Plasma 5 支持在应用内设置全局快捷键。
 - 长截图高度上限为 40,000 像素。动态页面、悬浮层、懒加载和重复内容会影响拼接；本功能不是浏览器整页导出。
@@ -142,6 +129,6 @@ KaPin 是基于 [Kapture](https://github.com/ycwei5/kapture) 衍生的独立开�
 
 ## 贡献与许可证
 
-问题和改进建议请提交到 [Issues](https://github.com/CyberAn-Dev/kapture-dev/issues)，代码贡献请使用 [Pull Requests](https://github.com/CyberAn-Dev/kapture-dev/pulls)。
+问题和改进建议请提交到 [Issues](https://github.com/CyberAn-Dev/KaPin/issues)，代码贡献请使用 [Pull Requests](https://github.com/CyberAn-Dev/KaPin/pulls)。
 
-本项目基于 [ycwei5/kapture](https://github.com/ycwei5/kapture)；MIT 许可证及上游版权信息见 [LICENSE](LICENSE)。主题配色参考 [One Dark Pro](https://github.com/Binaryify/OneDark-Pro) 与 [Vitesse](https://github.com/antfu/vscode-theme-vitesse)。
+KaPin 采用 MIT 许可证，详见 [LICENSE](LICENSE)。项目最初源自 [Kapture](https://github.com/ycwei5/kapture)，此后已大幅演进。主题配色参考 [One Dark Pro](https://github.com/Binaryify/OneDark-Pro) 与 [Vitesse](https://github.com/antfu/vscode-theme-vitesse)。

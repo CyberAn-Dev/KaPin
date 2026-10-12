@@ -4,13 +4,13 @@
 
 # KaPin
 
-**An open-source PixPin alternative for Linux X11**
+**A practical screenshot toolkit for Linux X11**
 
 Screenshots · Scrolling capture · OCR · Pinned images · Annotation · Recording
 
-Capture, annotate, extract text, and keep visual references at hand in one X11 workflow.
+One lightweight tray app for the everyday screenshot workflow on an X11 desktop — capture, mark it up, pull the text out, pin it to your screen.
 
-[简体中文](README.zh-CN.md) · [Quick start](#quick-start) · [Features](#features) · [Report an issue](https://github.com/CyberAn-Dev/kapture-dev/issues)
+[简体中文](README.zh-CN.md) · [Quick start](#quick-start) · [Features](#features) · [Report an issue](https://github.com/CyberAn-Dev/KaPin/issues)
 
 ![Platform](https://img.shields.io/badge/Linux-X11-3776ab)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -42,12 +42,15 @@ Capture, annotate, extract text, and keep visual references at hand in one X11 w
 
 </details>
 
-## A familiar capture workflow
+## Capture it, mark it, pin it
 
-- **Capture and explain**: every capture opens in inline editing. Select a region or window, add arrows, numbered steps, or mosaic, then copy or save; open the full editor when you need more space.
-- **Get text out of images**: open a capture in the full editor for automatic OCR, select words in the image, or grab text directly from the screen.
-- **Keep references beside your work**: pin clipboard images, zoom, and adjust opacity.
-- **Go beyond one screen**: capture automatically or scroll manually inside a red frame, with live preview and duplicate-aware stitching.
+KaPin keeps the whole screenshot workflow in one place on the X11 desktop:
+
+- **Capture → annotate in place.** Drag a region or click a window and the selection is immediately editable — arrows, numbered steps, mosaic, text — without opening a separate window. Enter copies, Esc cancels.
+- **Take text out of any image.** OCR runs automatically when a capture opens in the editor; drag-select words directly on the image, or grab text off a screen region straight to the clipboard.
+- **Pin references beside your work.** Pin clipboard images on top of everything, zoom with the wheel, tune opacity with Ctrl+scroll, annotate the pin itself, and drag across recognized words to copy them.
+- **Go past one screen.** Scrolling capture stitches a red-frame region into one tall image, manually or automatically, with a live preview that won't duplicate rows you already captured.
+- **Record when a still isn't enough.** A recording toolbar sits right next to your selection: pick frame rate, resolution, countdown, and duration, then export MP4, GIF, or MKV.
 
 ## Features
 
@@ -71,24 +74,15 @@ Use an **X11** session. The install scripts target Ubuntu or Kubuntu with `apt` 
 ### From source
 
 ```bash
-git clone https://github.com/CyberAn-Dev/kapture-dev.git
-cd kapture-dev
+git clone https://github.com/CyberAn-Dev/KaPin.git
+cd KaPin
 bash install.sh
 ./run.sh
 ```
 
 The installer adds system dependencies and an application-menu entry. Keep the checkout in place because the launcher uses its path.
 
-### Optional: build a `.deb`
-
-```bash
-bash build_deb.sh 1.1.0
-sudo apt install ./dist/kapture_1.1.0_all.deb
-```
-
-`1.1.0` is an example version. The package is built from the current checkout; launch with `kapture` and remove with `sudo apt remove kapture`.
-
-Upstream [releases](https://github.com/ycwei5/kapture/releases) contain the upstream app and may not include this fork's changes.
+Releases in this repository include KaPin's own changes; package name and command remain `kapture`, so upgrading users are unaffected.
 
 <details>
 <summary>Appearance and settings</summary>
@@ -124,16 +118,9 @@ Scroll speed lives in the scrolling-capture menu; screenshot delay lives in the 
 
 History stays on this machine and survives restarts: up to 10 screenshots with capture timestamps and 10 clipboard images, with a separate 40-million-pixel budget per collection; the newest image is always retained. Clear both collections from the history window.
 
-## Command line
+## Good to know
 
-Run one action with `./run.sh <option>`, for example `./run.sh --region`.
-
-- Capture: `--region`, `--window`, `--scroll`, `--manual`, `--repeat`
-- Other: `--pin1`, `--pin2`, `--color`, `--record`, `--settings`, `--show`, `--background`
-
-## How it differs from PixPin
-
-KaPin is an independent open-source project, originally based on [Kapture](https://github.com/ycwei5/kapture), and is not affiliated with [PixPin](https://pixpin.cn/). It is a focused Linux X11 replacement for PixPin's everyday screenshot workflow: inline editing, OCR, scrolling capture, pinning, and recording are available in one app, while the overall feature set is narrower. OCR translation, QR recognition, and recording audio are not currently provided.
+KaPin is an independent open-source project. It focuses on the core screenshot workflow — inline editing, OCR, scrolling capture, pinning, and recording in one app — and keeps that scope tight. OCR translation, QR recognition, and recording audio are not currently provided.
 
 - X11 only; Wayland is not supported. In-app global shortcut setup is available on GNOME and KDE Plasma 5.
 - Scrolling capture is limited to 40,000 pixels in height. Dynamic pages, overlays, lazy loading, and repeated content can affect alignment; it is not a browser full-page export.
@@ -142,6 +129,6 @@ KaPin is an independent open-source project, originally based on [Kapture](https
 
 ## Contribute and license
 
-Report issues or propose changes in [Issues](https://github.com/CyberAn-Dev/kapture-dev/issues) and [Pull Requests](https://github.com/CyberAn-Dev/kapture-dev/pulls).
+Report issues or propose changes in [Issues](https://github.com/CyberAn-Dev/KaPin/issues) and [Pull Requests](https://github.com/CyberAn-Dev/KaPin/pulls).
 
-Based on [ycwei5/kapture](https://github.com/ycwei5/kapture); see [LICENSE](LICENSE) for the MIT license and upstream copyright. Theme palettes are adapted from [One Dark Pro](https://github.com/Binaryify/OneDark-Pro) and [Vitesse](https://github.com/antfu/vscode-theme-vitesse).
+KaPin is MIT licensed — see [LICENSE](LICENSE). It originally started from [Kapture](https://github.com/ycwei5/kapture) and has since diverged substantially. Theme palettes are adapted from [One Dark Pro](https://github.com/Binaryify/OneDark-Pro) and [Vitesse](https://github.com/antfu/vscode-theme-vitesse).
