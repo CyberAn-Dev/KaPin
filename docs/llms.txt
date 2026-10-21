@@ -44,4 +44,4 @@ MIT licensed. KaPin originally started from [Kapture](https://github.com/ycwei5/
 
 ## Keywords
 
-Linux screenshot tool, PixPin Linux, PixPin alternative, scrolling screenshot, long screenshot, full page screenshot, screenshot OCR, Tesseract OCR Linux, screen capture Ubuntu, Kubuntu KDE screenshot, screen recorder Linux, image annotation, blur sensitive info, pin screenshot, color picker, X11, PyQt5, Snipaste alternative Linux, ShareX alternative Linux, Flameshot alternative.
+Linux screenshot tool, PixPin Linux, scrolling screenshot, long screenshot, full page screenshot, screenshot OCR, Tesseract OCR Linux, screen capture Ubuntu, Kubuntu KDE screenshot, screen recorder Linux, image annotation, blur sensitive info, pin screenshot, color picker, X11, PyQt5, Snipaste alternative Linux, ShareX alternative Linux, Flameshot alternative.
