@@ -15,6 +15,7 @@ Dependencies (system, install via apt): tesseract-ocr (+ language packs), ffmpeg
 import sys
 import time
 import threading
+from collections import OrderedDict
 
 import cv2
 import numpy as np
@@ -191,6 +192,8 @@ TR = {
     "lab_delay": {"zh": "延时", "en": "Delay"},
     "lab_speed": {"zh": "滚速", "en": "Speed"},
     "lab_width": {"zh": "线宽", "en": "Width"},
+    "lab_strength": {"zh": "强度", "en": "Strength"},
+    "tip_strength": {"zh": "打码强度", "en": "Blur strength"},
     "lab_output": {"zh": "输出", "en": "Output"},
     # Annotation
     "a_rect": {"zh": "矩形", "en": "Rectangle"},
@@ -1776,6 +1779,16 @@ class AnnotateCanvas(QtWidgets.QWidget):
     textSelected = QtCore.pyqtSignal(str)       # picktext: words the user dragged over
     picktextNeedsWords = QtCore.pyqtSignal()    # picktext used before word boxes exist
     changed = QtCore.pyqtSignal()              # document content changed
+    toolChanged = QtCore.pyqtSignal(str)       # active tool name; drives the width/strength control
+
+    # Blur intensity 1..30 maps to two independent exponential curves. Both are anchored at the
+    # default strength 3 so existing captures look the same, then rise steeply so the top of the
+    # range can bury text in a large region (the old linear mapping topped out at 90 / 121 px).
+    BLUR_MAX_STRENGTH = 30
+    BLUR_DEFAULT_STRENGTH = 3
+    MOSAIC_BLOCK_MAX = 200          # mosaic block size cap, in px
+    GAUSSIAN_KERNEL_MAX = 199       # odd, Gaussian kernel size cap, in px
+    BLUR_CACHE_BYTES = 48 * 1024 * 1024   # ceiling for cached blurred tiles
 
     def __init__(self):
         super().__init__()
@@ -1798,6 +1811,11 @@ class AnnotateCanvas(QtWidgets.QWidget):
         self._redo_stack = []
         self._history_limit = 100
         self.blur_style = "pixelate"
+        self.blur_strength = self.BLUR_DEFAULT_STRENGTH   # independent of pen width
+        # Blurred tiles for committed regions, keyed by region + parameters. Assigning to
+        # base clears this, so it can never serve a tile from a superseded screenshot.
+        self._blur_cache = OrderedDict()
+        self._blur_cache_bytes = 0
         self.color = QtGui.QColor(255, 40, 40)
         self.width = 3
         self.setFocusPolicy(Qt.StrongFocus)
@@ -1815,6 +1833,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         self.items.clear()
         self.cur = None
         self._word_boxes = []
+        self._clear_blur_cache()        # tiles are derived from base, so they die with it
         self._sel_from = self._sel_to = None
         self._selected_item = None
         self._drag_start = self._drag_item = self._drag_before = None
@@ -1852,6 +1871,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         # picktext shows the I-beam only while hovering a recognized word (updated in
         # mouseMoveEvent); other tools always use the normal pointer.
         self.setCursor(Qt.ArrowCursor)
+        self.toolChanged.emit(name)
 
     def set_color(self, qcolor):
         self.color = QtGui.QColor(qcolor)
@@ -1869,6 +1889,25 @@ class AnnotateCanvas(QtWidgets.QWidget):
             if item.get("width") != w:
                 before = self._content_state()
                 item["width"] = w
+                self._commit_change(before)
+
+    def _is_blur_selected(self):
+        return (self._valid_selection()
+                and self.items[self._selected_item].get("type") == "blur")
+
+    def set_blur_strength(self, strength):
+        """Set the blur intensity. Unlike width this never leaks into the pen tools.
+
+        When a blur region is selected the change applies to that region so it can be
+        re-blurred without redrawing it.
+        """
+        strength = max(1, min(self.BLUR_MAX_STRENGTH, int(strength)))
+        self.blur_strength = strength
+        if self._is_blur_selected():
+            item = self.items[self._selected_item]
+            if item.get("blur_strength") != strength:
+                before = self._content_state()
+                item["blur_strength"] = strength
                 self._commit_change(before)
 
     @staticmethod
@@ -1912,6 +1951,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         self.items = copied["items"]
         self.cur = None
         self._word_boxes = []
+        self._clear_blur_cache()        # tiles are derived from base, so they die with it
         self._sel_from = self._sel_to = None
         self._selected_item = None
         self._drag_start = self._drag_item = self._drag_before = None
@@ -2007,6 +2047,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         for item in self.items:
             self._translate_item(item, QtCore.QPointF(-bounds.x(), -bounds.y()))
         self._word_boxes = []
+        self._clear_blur_cache()        # tiles are derived from base, so they die with it
         self._sel_from = self._sel_to = None
         self._selected_item = None
         self._apply_size()
@@ -2023,6 +2064,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         self.items.clear()
         self.cur = None
         self._word_boxes = []
+        self._clear_blur_cache()        # tiles are derived from base, so they die with it
         self._sel_from = self._sel_to = None
         self._selected_item = None
         self._commit_change(before)
@@ -2064,7 +2106,14 @@ class AnnotateCanvas(QtWidgets.QWidget):
             if self._text_editor is None or index != self._text_index:
                 self._draw_item(p, it)
         if self.cur:
-            self._draw_item(p, self.cur)
+            self._draw_item(p, self.cur, cacheable=False)
+            # A region with no outline is invisible against busy content, so the box being
+            # dragged gets the same dashed frame as the selection. Preview only: cur never
+            # reaches render_flattened, so the exported image stays clean.
+            if self.cur.get("type") == "blur":
+                p.save()
+                self._draw_selection(p, self.cur)
+                p.restore()
         if (self.tool == "select" and self._valid_selection()):
             self._draw_selection(p, self.items[self._selected_item])
         # picktext: cyan highlight under the words the user is dragging over
@@ -2074,7 +2123,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
             for r, _w in self._selected_words():
                 p.drawRect(r)
 
-    def _draw_item(self, p, it):
+    def _draw_item(self, p, it, cacheable=True):
         pen = QtGui.QPen(it["color"], it["width"], Qt.SolidLine,
                          Qt.RoundCap, Qt.RoundJoin)
         p.setPen(pen)
@@ -2099,7 +2148,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         elif t == "highlight":
             self._draw_highlight(p, it)
         elif t == "blur":
-            self._draw_blur(p, it)
+            self._draw_blur(p, it, cacheable)
         elif t == "number":
             self._draw_number(p, it)
         elif t == "magnify":
@@ -2118,28 +2167,69 @@ class AnnotateCanvas(QtWidgets.QWidget):
         p.setBrush(c)
         p.drawRect(r)
 
-    def _draw_blur(self, p, it):
+    @classmethod
+    def _mosaic_block(cls, strength, side):
+        """Mosaic block size in px. Capped at half the region so at least 2x2 blocks remain."""
+        block = round(4 * 1.28 ** (max(1, strength) - 1))
+        return int(max(1, min(block, cls.MOSAIC_BLOCK_MAX, side // 2)))
+
+    @classmethod
+    def _gaussian_kernel(cls, strength, side):
+        """Odd Gaussian kernel size in px, clamped so a small region doesn't blur to flat colour."""
+        kernel = round(13 * 1.13 ** (max(1, strength) - cls.BLUR_DEFAULT_STRENGTH))
+        kernel = int(max(3, min(kernel, cls.GAUSSIAN_KERNEL_MAX, max(3, side))))
+        return kernel if kernel % 2 == 1 else kernel + 1
+
+    def _draw_blur(self, p, it, cacheable=True):
         if self.base is None:
             return
         r = QtCore.QRectF(it["a"], it["b"]).normalized().toRect()
         r = r.intersected(self.base.rect())
         if r.width() < 2 or r.height() < 2:
             return
-        sub = self.base.copy(r)
-        if it.get("blur_style", "pixelate") == "gaussian":
-            bgr = qimage_to_bgr(sub)
-            kernel = max(3, int(it.get("width", self.width)) * 4 + 1)
-            if kernel % 2 == 0:
-                kernel += 1
-            blurred = cv2.GaussianBlur(bgr, (kernel, kernel), 0)
-            p.drawImage(r.topLeft(), bgr_to_qimage(blurred))
+        strength = it.get("blur_strength", self.blur_strength)
+        style = it.get("blur_style", "pixelate")
+        # A committed region's pixels never change, so its tile is reused across repaints;
+        # without this, drawing N regions repeats N blur passes on every mouse-move repaint.
+        key = (r.x(), r.y(), r.width(), r.height(), style, strength)
+        cached = self._blur_cache.get(key) if cacheable else None
+        if cached is not None:
+            self._blur_cache.move_to_end(key)      # keep the LRU order honest
+            p.drawImage(r.topLeft(), cached[0])
             return
-        factor = max(4, it["width"] * 3)            # mosaic block size scales with line width
+        tile = self._blurred_tile(r, style, strength)
+        if cacheable:
+            self._remember_blur_tile(key, tile)
+        p.drawImage(r.topLeft(), tile)
+
+    def _blurred_tile(self, r, style, strength):
+        """Compute the obscured content for one region, in image coordinates."""
+        sub = self.base.copy(r)
+        if style == "gaussian":
+            bgr = qimage_to_bgr(sub)
+            kernel = self._gaussian_kernel(strength, min(r.width(), r.height()))
+            return bgr_to_qimage(cv2.GaussianBlur(bgr, (kernel, kernel), 0))
+        factor = self._mosaic_block(strength, min(r.width(), r.height()))
         small = sub.scaled(max(1, r.width() // factor), max(1, r.height() // factor),
                            Qt.IgnoreAspectRatio, Qt.FastTransformation)
-        mosaic = small.scaled(r.width(), r.height(),
-                              Qt.IgnoreAspectRatio, Qt.FastTransformation)
-        p.drawImage(r.topLeft(), mosaic)
+        return small.scaled(r.width(), r.height(),
+                            Qt.IgnoreAspectRatio, Qt.FastTransformation)
+
+    def _clear_blur_cache(self):
+        self._blur_cache.clear()
+        self._blur_cache_bytes = 0
+
+    def _remember_blur_tile(self, key, tile):
+        """Bound the tile cache by bytes, not entry count: one huge region can outweigh many."""
+        cost = tile.byteCount()
+        if cost > self.BLUR_CACHE_BYTES:
+            return                          # a single oversized region is not worth caching
+        self._blur_cache[key] = (tile, cost)
+        self._blur_cache.move_to_end(key)
+        self._blur_cache_bytes += cost
+        while self._blur_cache_bytes > self.BLUR_CACHE_BYTES:
+            _key, (_tile, evicted) = self._blur_cache.popitem(last=False)
+            self._blur_cache_bytes -= evicted
 
     def _draw_number(self, p, it):
         rad = max(12.0, it["width"] * 4.0)
@@ -2317,6 +2407,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         base = {"color": QtGui.QColor(self.color), "width": self.width}
         if self.tool == "blur":
             base["blur_style"] = self.blur_style
+            base["blur_strength"] = self.blur_strength
         if self.tool == "pen":
             self.cur = dict(base, type="pen", pts=[pt])
         else:
@@ -2515,6 +2606,7 @@ class EditTools(QtWidgets.QFrame):
         super().__init__(parent)
         self.compact = bool(compact)
         self._closing = False
+        self._suppress_measure_sync = False
         self.canvas = canvas
         self._workers = []
         self._generation = 0
@@ -2563,10 +2655,12 @@ class EditTools(QtWidgets.QFrame):
         self.color.setToolTip(t('dlg_pickcolor'))
         self.color.clicked.connect(self.choose_color)
         self.line_width = QtWidgets.QSpinBox(self)
-        self.line_width.setRange(1, 30)
+        self.line_width.setRange(1, AnnotateCanvas.BLUR_MAX_STRENGTH)
         self.line_width.setValue(canvas.width)
         self.line_width.setFixedWidth(54)
-        self.line_width.valueChanged.connect(canvas.set_width)
+        self._sync_measure_mode()
+        self.line_width.valueChanged.connect(self._apply_measure)
+        canvas.toolChanged.connect(lambda _name: self._sync_measure_mode())
 
         self.actions = row if self.compact else QtWidgets.QHBoxLayout()
         self.actions.setSpacing(4)
@@ -2702,6 +2796,7 @@ class EditTools(QtWidgets.QFrame):
         width_layout = QtWidgets.QHBoxLayout(width_widget)
         width_layout.setContentsMargins(12, 2, 12, 2)
         width_label = QtWidgets.QLabel(t('lab_width'), width_widget)
+        self._width_label = width_label
         width_layout.addWidget(width_label)
         width_layout.addWidget(self.line_width)
         width_action.setDefaultWidget(width_widget)
@@ -2788,6 +2883,42 @@ class EditTools(QtWidgets.QFrame):
         super().resizeEvent(event)
         if self.compact and hasattr(self, 'note'):
             self.note.reposition()
+
+    def _measure_is_strength(self):
+        """True when the shared spin box controls blur strength rather than pen width."""
+        return self.canvas.tool == 'blur'
+
+    def _sync_measure_mode(self):
+        """Retitle and rebind the one spin box: strength while blurring, width otherwise.
+
+        The two values live separately on the canvas, so switching tools never leaks one
+        into the other.
+        """
+        strength = self._measure_is_strength()
+        self._suppress_measure_sync = True   # programmatic write; don't echo back to the canvas
+        try:
+            self.line_width.setValue(self.canvas.blur_strength if strength else self.canvas.width)
+        finally:
+            self._suppress_measure_sync = False
+        tip = t('tip_strength') if strength else t('lab_width')
+        self.line_width.setToolTip(tip)
+        # The settings menu is built after this control, so it may not exist yet.
+        menu = getattr(self, 'settings_menu', None)
+        action = next((a for a in (menu.actions() if menu else [])
+                       if a.objectName() == 'setting:width'), None)
+        if action is not None:
+            action.setText(t('lab_strength') if strength else t('lab_width'))
+        label = getattr(self, '_width_label', None)
+        if label is not None:
+            label.setText(t('lab_strength') if strength else t('lab_width'))
+
+    def _apply_measure(self, value):
+        if getattr(self, '_suppress_measure_sync', False):
+            return
+        if self._measure_is_strength():
+            self.canvas.set_blur_strength(value)
+        else:
+            self.canvas.set_width(value)
 
     def set_tool(self, name):
         if name not in self.buttons:
@@ -4355,6 +4486,7 @@ class MainWindow(QtWidgets.QWidget):
         self.image_bgr = None        # current screenshot (BGR numpy)
         self.worker = None
         self._mode = None            # 'scroll' or 'single'
+        self._suppress_measure_sync = False
         self.settings = QtCore.QSettings("ScrollShot", "ScrollShot")
         set_lang(self.settings.value("ui_lang", "zh"))      # apply the UI language
         write_desktop_entry()                               # launcher name follows the language
@@ -4592,11 +4724,11 @@ class MainWindow(QtWidgets.QWidget):
         self.btn_color.setCursor(Qt.PointingHandCursor)
         self.btn_color.clicked.connect(self.pick_color)
         self._add_annotation_widget(self.btn_color, tools)
-        self.lwidth = QtWidgets.QSpinBox(); self.lwidth.setRange(1, 30)
-        self.lwidth.setObjectName("annotationWidth")
+        self.lwidth = QtWidgets.QSpinBox(); self.lwidth.setObjectName("annotationWidth")
+        self.lwidth.setRange(1, AnnotateCanvas.BLUR_MAX_STRENGTH)
         self.lwidth.setValue(3); self.lwidth.setFixedWidth(48)
         self.lwidth.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        self.lwidth.valueChanged.connect(lambda v: self.canvas.set_width(v))
+        self.lwidth.valueChanged.connect(self._apply_annotation_measure)
         self._add_annotation_widget(self.lwidth, tools)
         self.btn_undo = self._tbtn("undo", "")
         self.btn_undo.setObjectName("annotationUndo")
@@ -4692,6 +4824,8 @@ class MainWindow(QtWidgets.QWidget):
         self.canvas.cropRequested.connect(self._do_crop)
         self.canvas.textSelected.connect(self._on_text_selected)
         self.canvas.picktextNeedsWords.connect(self._ensure_word_boxes)
+        self.canvas.toolChanged.connect(lambda _name: self._sync_annotation_measure())
+        self._sync_annotation_measure()
         self.scroll = QtWidgets.QScrollArea()
         self.scroll.setWidget(self.canvas)
         self.scroll.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
@@ -4767,6 +4901,24 @@ class MainWindow(QtWidgets.QWidget):
         self.canvas.set_tool(canvas_tool)
         self._tool_btns["blur" if name == "gaussian" else name].setChecked(True)
         self._sync_main_tool(name)
+
+    def _sync_annotation_measure(self):
+        """One spin box, two meanings: blur strength while blurring, pen width otherwise."""
+        strength = self.canvas.tool == "blur"
+        self._suppress_measure_sync = True    # programmatic write; don't echo back to the canvas
+        try:
+            self.lwidth.setValue(self.canvas.blur_strength if strength else self.canvas.width)
+        finally:
+            self._suppress_measure_sync = False
+        self.lwidth.setToolTip(t("tip_strength") if strength else t("lab_width"))
+
+    def _apply_annotation_measure(self, value):
+        if self._suppress_measure_sync:
+            return
+        if self.canvas.tool == "blur":
+            self.canvas.set_blur_strength(value)
+        else:
+            self.canvas.set_width(value)
 
     def _sync_main_tool(self, name):
         if name not in self._tool_btns and name != "gaussian":
@@ -4869,7 +5021,7 @@ class MainWindow(QtWidgets.QWidget):
         self._scroll_down_action.setText(t("scroll_down"))
         self._scroll_up_action.setText(t("scroll_up"))
         self._output_label.setText(t("lab_output"))
-        self.lwidth.setToolTip(t("lab_width"))
+        self._sync_annotation_measure()          # width vs strength label follows the active tool
         self._ocr_lab_lang.setText(t("ocr_lang"))
         self._ocr_lab_layout.setText(t("ocr_layout"))
         self.enhance.setText(t("ocr_enhance"))
