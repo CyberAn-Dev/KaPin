@@ -193,7 +193,6 @@ TR = {
     "lab_speed": {"zh": "滚速", "en": "Speed"},
     "lab_width": {"zh": "线宽", "en": "Width"},
     "lab_strength": {"zh": "强度", "en": "Strength"},
-    "tip_strength": {"zh": "打码强度", "en": "Blur strength"},
     "lab_output": {"zh": "输出", "en": "Output"},
     # Annotation
     "a_rect": {"zh": "矩形", "en": "Rectangle"},
@@ -324,6 +323,49 @@ TR = {
     "card_pin": {"zh": "钉到屏幕", "en": "Pin to screen"},
     "card_close": {"zh": "关闭", "en": "Close"},
 }
+
+
+def blur_strength_action(canvas, menu):
+    """A strength slider to sit inside the mosaic menu, where it belongs.
+
+    Reads the canvas when the menu opens rather than tracking a signal, so the slider can
+    never drift from the value a drawn region actually used. It retargets the canvas default
+    for the next region, and re-blurs the region under selection so the effect is visible.
+    """
+    action = QtWidgets.QWidgetAction(menu)
+    action.setObjectName("setting:blur_strength")
+    widget = QtWidgets.QWidget(menu)
+    row = QtWidgets.QHBoxLayout(widget)
+    row.setContentsMargins(12, 2, 12, 2)
+    row.setSpacing(8)
+    name = QtWidgets.QLabel(t("lab_strength"), widget)
+    slider = QtWidgets.QSlider(Qt.Horizontal, widget)
+    slider.setObjectName("blurStrengthSlider")
+    slider.setRange(1, AnnotateCanvas.BLUR_MAX_STRENGTH)
+    slider.setFixedWidth(110)
+    readout = QtWidgets.QLabel(str(canvas.blur_strength), widget)
+    readout.setFixedWidth(18)
+    readout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    row.addWidget(name)
+    row.addWidget(slider)
+    row.addWidget(readout)
+    action.setDefaultWidget(widget)
+
+    def show_event(_action=None):
+        name.setText(t("lab_strength"))     # the menu is built once; the language may not be
+        slider.blockSignals(True)
+        slider.setValue(canvas.blur_strength)
+        slider.blockSignals(False)
+        readout.setText(str(canvas.blur_strength))
+
+    def changed(value):
+        readout.setText(str(value))
+        canvas.set_blur_strength(value)
+
+    slider.valueChanged.connect(changed)
+    menu.aboutToShow.connect(show_event)
+    menu.addAction(action)
+    return action
 
 
 def swatch_icon(color, size=20):
@@ -1779,7 +1821,6 @@ class AnnotateCanvas(QtWidgets.QWidget):
     textSelected = QtCore.pyqtSignal(str)       # picktext: words the user dragged over
     picktextNeedsWords = QtCore.pyqtSignal()    # picktext used before word boxes exist
     changed = QtCore.pyqtSignal()              # document content changed
-    toolChanged = QtCore.pyqtSignal(str)       # active tool name; drives the width/strength control
 
     # Blur intensity 1..30 maps to two independent exponential curves. Both are anchored at the
     # default strength 3 so existing captures look the same, then rise steeply so the top of the
@@ -1871,7 +1912,6 @@ class AnnotateCanvas(QtWidgets.QWidget):
         # picktext shows the I-beam only while hovering a recognized word (updated in
         # mouseMoveEvent); other tools always use the normal pointer.
         self.setCursor(Qt.ArrowCursor)
-        self.toolChanged.emit(name)
 
     def set_color(self, qcolor):
         self.color = QtGui.QColor(qcolor)
@@ -2606,7 +2646,6 @@ class EditTools(QtWidgets.QFrame):
         super().__init__(parent)
         self.compact = bool(compact)
         self._closing = False
-        self._suppress_measure_sync = False
         self.canvas = canvas
         self._workers = []
         self._generation = 0
@@ -2655,12 +2694,11 @@ class EditTools(QtWidgets.QFrame):
         self.color.setToolTip(t('dlg_pickcolor'))
         self.color.clicked.connect(self.choose_color)
         self.line_width = QtWidgets.QSpinBox(self)
-        self.line_width.setRange(1, AnnotateCanvas.BLUR_MAX_STRENGTH)
+        self.line_width.setRange(1, 30)
         self.line_width.setValue(canvas.width)
         self.line_width.setFixedWidth(54)
-        self._sync_measure_mode()
-        self.line_width.valueChanged.connect(self._apply_measure)
-        canvas.toolChanged.connect(lambda _name: self._sync_measure_mode())
+        self.line_width.setToolTip(t('lab_width'))
+        self.line_width.valueChanged.connect(canvas.set_width)
 
         self.actions = row if self.compact else QtWidgets.QHBoxLayout()
         self.actions.setSpacing(4)
@@ -2747,6 +2785,8 @@ class EditTools(QtWidgets.QFrame):
                 action = self._make_tool_action(menu, name, action_group)
                 menu.addAction(action)
                 actions[name] = action
+            if key == 'mosaic':
+                blur_strength_action(self.canvas, menu)
             self.group_actions[key] = actions
             self._compact_groups[key] = (button, menu, tuple(names))
             menu.aboutToHide.connect(lambda m=menu: self._menu_hidden(m))
@@ -2796,7 +2836,6 @@ class EditTools(QtWidgets.QFrame):
         width_layout = QtWidgets.QHBoxLayout(width_widget)
         width_layout.setContentsMargins(12, 2, 12, 2)
         width_label = QtWidgets.QLabel(t('lab_width'), width_widget)
-        self._width_label = width_label
         width_layout.addWidget(width_label)
         width_layout.addWidget(self.line_width)
         width_action.setDefaultWidget(width_widget)
@@ -2883,42 +2922,6 @@ class EditTools(QtWidgets.QFrame):
         super().resizeEvent(event)
         if self.compact and hasattr(self, 'note'):
             self.note.reposition()
-
-    def _measure_is_strength(self):
-        """True when the shared spin box controls blur strength rather than pen width."""
-        return self.canvas.tool == 'blur'
-
-    def _sync_measure_mode(self):
-        """Retitle and rebind the one spin box: strength while blurring, width otherwise.
-
-        The two values live separately on the canvas, so switching tools never leaks one
-        into the other.
-        """
-        strength = self._measure_is_strength()
-        self._suppress_measure_sync = True   # programmatic write; don't echo back to the canvas
-        try:
-            self.line_width.setValue(self.canvas.blur_strength if strength else self.canvas.width)
-        finally:
-            self._suppress_measure_sync = False
-        tip = t('tip_strength') if strength else t('lab_width')
-        self.line_width.setToolTip(tip)
-        # The settings menu is built after this control, so it may not exist yet.
-        menu = getattr(self, 'settings_menu', None)
-        action = next((a for a in (menu.actions() if menu else [])
-                       if a.objectName() == 'setting:width'), None)
-        if action is not None:
-            action.setText(t('lab_strength') if strength else t('lab_width'))
-        label = getattr(self, '_width_label', None)
-        if label is not None:
-            label.setText(t('lab_strength') if strength else t('lab_width'))
-
-    def _apply_measure(self, value):
-        if getattr(self, '_suppress_measure_sync', False):
-            return
-        if self._measure_is_strength():
-            self.canvas.set_blur_strength(value)
-        else:
-            self.canvas.set_width(value)
 
     def set_tool(self, name):
         if name not in self.buttons:
@@ -4486,7 +4489,6 @@ class MainWindow(QtWidgets.QWidget):
         self.image_bgr = None        # current screenshot (BGR numpy)
         self.worker = None
         self._mode = None            # 'scroll' or 'single'
-        self._suppress_measure_sync = False
         self.settings = QtCore.QSettings("ScrollShot", "ScrollShot")
         set_lang(self.settings.value("ui_lang", "zh"))      # apply the UI language
         write_desktop_entry()                               # launcher name follows the language
@@ -4725,10 +4727,10 @@ class MainWindow(QtWidgets.QWidget):
         self.btn_color.clicked.connect(self.pick_color)
         self._add_annotation_widget(self.btn_color, tools)
         self.lwidth = QtWidgets.QSpinBox(); self.lwidth.setObjectName("annotationWidth")
-        self.lwidth.setRange(1, AnnotateCanvas.BLUR_MAX_STRENGTH)
+        self.lwidth.setRange(1, 30)
         self.lwidth.setValue(3); self.lwidth.setFixedWidth(48)
         self.lwidth.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        self.lwidth.valueChanged.connect(self._apply_annotation_measure)
+        self.lwidth.valueChanged.connect(lambda v: self.canvas.set_width(v))
         self._add_annotation_widget(self.lwidth, tools)
         self.btn_undo = self._tbtn("undo", "")
         self.btn_undo.setObjectName("annotationUndo")
@@ -4821,11 +4823,12 @@ class MainWindow(QtWidgets.QWidget):
         # ---------- Canvas ---------- #
         self.canvas = AnnotateCanvas()
         self._sync_main_tool(self.canvas.tool)
+        # The mosaic menu is built before the canvas exists, so the strength slider joins
+        # it here rather than reaching for a canvas that isn't there yet.
+        blur_strength_action(self.canvas, self._main_tool_groups["mosaic"][1])
         self.canvas.cropRequested.connect(self._do_crop)
         self.canvas.textSelected.connect(self._on_text_selected)
         self.canvas.picktextNeedsWords.connect(self._ensure_word_boxes)
-        self.canvas.toolChanged.connect(lambda _name: self._sync_annotation_measure())
-        self._sync_annotation_measure()
         self.scroll = QtWidgets.QScrollArea()
         self.scroll.setWidget(self.canvas)
         self.scroll.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
@@ -4901,24 +4904,6 @@ class MainWindow(QtWidgets.QWidget):
         self.canvas.set_tool(canvas_tool)
         self._tool_btns["blur" if name == "gaussian" else name].setChecked(True)
         self._sync_main_tool(name)
-
-    def _sync_annotation_measure(self):
-        """One spin box, two meanings: blur strength while blurring, pen width otherwise."""
-        strength = self.canvas.tool == "blur"
-        self._suppress_measure_sync = True    # programmatic write; don't echo back to the canvas
-        try:
-            self.lwidth.setValue(self.canvas.blur_strength if strength else self.canvas.width)
-        finally:
-            self._suppress_measure_sync = False
-        self.lwidth.setToolTip(t("tip_strength") if strength else t("lab_width"))
-
-    def _apply_annotation_measure(self, value):
-        if self._suppress_measure_sync:
-            return
-        if self.canvas.tool == "blur":
-            self.canvas.set_blur_strength(value)
-        else:
-            self.canvas.set_width(value)
 
     def _sync_main_tool(self, name):
         if name not in self._tool_btns and name != "gaussian":
@@ -5021,7 +5006,7 @@ class MainWindow(QtWidgets.QWidget):
         self._scroll_down_action.setText(t("scroll_down"))
         self._scroll_up_action.setText(t("scroll_up"))
         self._output_label.setText(t("lab_output"))
-        self._sync_annotation_measure()          # width vs strength label follows the active tool
+        self.lwidth.setToolTip(t("lab_width"))
         self._ocr_lab_lang.setText(t("ocr_lang"))
         self._ocr_lab_layout.setText(t("ocr_layout"))
         self.enhance.setText(t("ocr_enhance"))
