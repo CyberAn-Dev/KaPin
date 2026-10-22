@@ -193,6 +193,11 @@ TR = {
     "lab_speed": {"zh": "滚速", "en": "Speed"},
     "lab_width": {"zh": "线宽", "en": "Width"},
     "lab_strength": {"zh": "强度", "en": "Strength"},
+    "lab_arrow_style": {"zh": "样式", "en": "Style"},
+    "arrow_v": {"zh": "开口 V", "en": "Open V"},
+    "arrow_solid": {"zh": "实心三角", "en": "Solid"},
+    "arrow_tapered": {"zh": "锥形", "en": "Tapered"},
+    "arrow_needle": {"zh": "细尖", "en": "Needle"},
     "lab_output": {"zh": "输出", "en": "Output"},
     # Annotation
     "a_rect": {"zh": "矩形", "en": "Rectangle"},
@@ -323,6 +328,75 @@ TR = {
     "card_pin": {"zh": "钉到屏幕", "en": "Pin to screen"},
     "card_close": {"zh": "关闭", "en": "Close"},
 }
+
+
+def arrow_style_icon(style, size=22, color="#d2d2da"):
+    """Thumbnail of one arrow style, drawn with the same geometry as the canvas."""
+    pm = QtGui.QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.Antialiasing)
+    a = QtCore.QPointF(size * 0.14, size * 0.5)
+    b = QtCore.QPointF(size * 0.86, size * 0.5)
+    shaft, head = AnnotateCanvas._arrow_shape(a, b, 1.6, style)
+    pen = QtGui.QPen(QtGui.QColor(color), 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen)
+    p.drawPath(shaft)
+    if not head.isEmpty():
+        p.setBrush(QtGui.QColor(color))
+        p.drawPath(head)
+    p.end()
+    return QtGui.QIcon(pm)
+
+
+def arrow_style_action(canvas, menu):
+    """A row of style buttons inside the arrow menu, like the blur strength slider.
+
+    Buttons show which style is live when the menu opens; a click restyles the next
+    arrow, or the selected one.
+    """
+    action = QtWidgets.QWidgetAction(menu)
+    action.setObjectName("setting:arrow_style")
+    widget = QtWidgets.QWidget(menu)
+    row = QtWidgets.QHBoxLayout(widget)
+    row.setContentsMargins(12, 2, 12, 2)
+    row.setSpacing(4)
+    row.addWidget(QtWidgets.QLabel(t("lab_arrow_style"), widget))
+    buttons = {}
+    group = QtWidgets.QButtonGroup(widget)      # exclusive: two live styles would lie
+    group.setExclusive(True)
+    for style in AnnotateCanvas.ARROW_STYLES:
+        button = QtWidgets.QToolButton(widget)
+        button.setObjectName("arrowStyle_" + style)
+        button.setIcon(arrow_style_icon(style))
+        button.setIconSize(QtCore.QSize(20, 20))
+        button.setFixedSize(28, 24)
+        button.setAutoRaise(True)
+        button.setToolTip(t("arrow_" + style))
+        button.setCheckable(True)
+        button.clicked.connect(lambda _c=False, name=style: canvas.set_arrow_style(name))
+        row.addWidget(button)
+        group.addButton(button)
+        buttons[style] = button
+    action.setDefaultWidget(widget)
+
+    label = row.itemAt(0).widget()
+
+    def show_event(_action=None):
+        label.setText(t("lab_arrow_style"))                    # menu is built once per language
+        for name, button in buttons.items():
+            button.setIcon(arrow_style_icon(name))
+            button.setToolTip(t("arrow_" + name))
+        live = buttons.get(canvas.arrow_style)
+        if live is not None:
+            live.setChecked(True)          # the group is exclusive, so this clears the rest
+        else:                              # a canvas value this row can't represent: show none
+            for button in buttons.values():
+                button.setChecked(False)
+
+    menu.aboutToShow.connect(show_event)
+    menu.addAction(action)
+    return action
 
 
 def blur_strength_action(canvas, menu):
@@ -1853,6 +1927,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         self._history_limit = 100
         self.blur_style = "pixelate"
         self.blur_strength = self.BLUR_DEFAULT_STRENGTH   # independent of pen width
+        self.arrow_style = "v"
         # Blurred tiles for committed regions, keyed by region + parameters. Assigning to
         # base clears this, so it can never serve a tile from a superseded screenshot.
         self._blur_cache = OrderedDict()
@@ -1948,6 +2023,18 @@ class AnnotateCanvas(QtWidgets.QWidget):
             if item.get("blur_strength") != strength:
                 before = self._content_state()
                 item["blur_strength"] = strength
+                self._commit_change(before)
+
+    def set_arrow_style(self, style):
+        """Head style for the next arrow; a selected arrow is restyled in place."""
+        if style not in self.ARROW_STYLES:
+            return
+        self.arrow_style = style
+        if self._valid_selection() and self.items[self._selected_item].get("type") == "arrow":
+            item = self.items[self._selected_item]
+            if item.get("arrow_style", "v") != style:
+                before = self._content_state()
+                item["arrow_style"] = style
                 self._commit_change(before)
 
     @staticmethod
@@ -2176,7 +2263,8 @@ class AnnotateCanvas(QtWidgets.QWidget):
         elif t == "line":
             p.drawLine(it["a"], it["b"])
         elif t == "arrow":
-            self._draw_arrow(p, it["a"], it["b"], it["width"])
+            self._draw_arrow(p, it["a"], it["b"], it["width"],
+                             it.get("arrow_style", "v"))
         elif t == "pen":
             if len(it["pts"]) > 1:
                 p.drawPolyline(QtGui.QPolygonF(it["pts"]))
@@ -2308,23 +2396,84 @@ class AnnotateCanvas(QtWidgets.QWidget):
         p.setPen(QtGui.QPen(it["color"], max(2, it["width"])))
         p.drawEllipse(c, rad, rad)
 
-    def _draw_arrow(self, p, a, b, width=None):
-        p.drawPath(self._arrow_path(a, b, self.width if width is None else width))
+    ARROW_STYLES = ("v", "solid", "tapered", "needle")
+
+    def _draw_arrow(self, p, a, b, width=None, style="v"):
+        shaft, head = self._arrow_shape(a, b, self.width if width is None else width, style)
+        p.drawPath(shaft)
+        if not head.isEmpty():
+            color = p.pen().color()
+            p.save()
+            p.setBrush(color)
+            p.drawPath(head)      # stroked by the current pen and filled in the same colour
+            p.restore()
+
+    @classmethod
+    def _arrow_path(cls, a, b, width, style="v"):
+        """Combined outline, shared by painting and hit-testing."""
+        shaft, head = cls._arrow_shape(a, b, width, style)
+        path = QtGui.QPainterPath(shaft)
+        if not head.isEmpty():
+            path.connectPath(head)
+        return path
 
     @staticmethod
-    def _arrow_path(a, b, width):
+    def _arrow_shape(a, b, width, style="v"):
+        """Split into a stroked shaft and an optionally filled head.
+
+        The v head is stroked like the shaft, so it stays exactly the pre-styles arrow.
+        The filled styles shrink the head to fit arrows shorter than the head itself.
+        """
         import math
-        path = QtGui.QPainterPath(a)
-        path.lineTo(b)
+        shaft = QtGui.QPainterPath(a)
+        shaft.lineTo(b)
+        head = QtGui.QPainterPath()
         angle = math.atan2(b.y() - a.y(), b.x() - a.x())
         size = 8 + width * 2
-        for delta in (math.radians(150), math.radians(-150)):
-            point = QtCore.QPointF(
-                b.x() + size * math.cos(angle + delta),
-                b.y() + size * math.sin(angle + delta))
-            path.moveTo(b)
-            path.lineTo(point)
-        return path
+        if style != "v":
+            length = math.hypot(b.x() - a.x(), b.y() - a.y())
+            if length:
+                size = min(size, length * 0.6)
+
+        def ray(distance, delta=0.0):
+            return QtCore.QPointF(b.x() + distance * math.cos(angle + delta),
+                                  b.y() + distance * math.sin(angle + delta))
+
+        barb1 = ray(size, math.radians(150))
+        barb2 = ray(size, math.radians(-150))
+        if style == "v":
+            for point in (barb1, barb2):
+                shaft.moveTo(b)
+                shaft.lineTo(point)
+        elif style == "solid":
+            head = QtGui.QPainterPath(b)
+            head.lineTo(barb1)
+            head.lineTo(barb2)
+            head.closeSubpath()
+        elif style == "tapered":
+            half_tail = max(1.0, width * 0.9)
+            notch = ray(size * 0.55, math.pi)     # back from the tip, along the shaft
+            perp = angle + math.pi / 2
+            dx, dy = math.cos(perp), math.sin(perp)
+            head = QtGui.QPainterPath(b)
+            head.lineTo(barb1)
+            head.lineTo(notch.x() + dx * half_tail, notch.y() + dy * half_tail)
+            head.lineTo(a.x() + dx * half_tail, a.y() + dy * half_tail)
+            head.lineTo(a.x() - dx * half_tail, a.y() - dy * half_tail)
+            head.lineTo(notch.x() - dx * half_tail, notch.y() - dy * half_tail)
+            head.lineTo(barb2)
+            head.closeSubpath()
+        elif style == "needle":
+            # Long narrow head: barbs sweep 166° back from the shaft so the point stays sharp.
+            barb1 = ray(size * 2.0, math.radians(166))
+            barb2 = ray(size * 2.0, math.radians(-166))
+            notch = ray(size * 1.1, math.pi)
+            head = QtGui.QPainterPath(b)
+            head.lineTo(barb1)
+            head.lineTo(notch)
+            head.lineTo(barb2)
+            head.closeSubpath()
+        return shaft, head
 
     @staticmethod
     def _translate_item(item, delta):
@@ -2348,7 +2497,8 @@ class AnnotateCanvas(QtWidgets.QWidget):
             path.moveTo(a)
             path.lineTo(b)
         elif kind == "arrow":
-            path = self._arrow_path(a, b, item.get("width", self.width))
+            path = self._arrow_path(a, b, item.get("width", self.width),
+                                    item.get("arrow_style", "v"))
         elif kind == "pen":
             points = item.get("pts", [])
             if points:
@@ -2448,6 +2598,8 @@ class AnnotateCanvas(QtWidgets.QWidget):
         if self.tool == "blur":
             base["blur_style"] = self.blur_style
             base["blur_strength"] = self.blur_strength
+        if self.tool == "arrow":
+            base["arrow_style"] = self.arrow_style
         if self.tool == "pen":
             self.cur = dict(base, type="pen", pts=[pt])
         else:
@@ -2787,6 +2939,8 @@ class EditTools(QtWidgets.QFrame):
                 actions[name] = action
             if key == 'mosaic':
                 blur_strength_action(self.canvas, menu)
+            if key == 'line':
+                arrow_style_action(self.canvas, menu)
             self.group_actions[key] = actions
             self._compact_groups[key] = (button, menu, tuple(names))
             menu.aboutToHide.connect(lambda m=menu: self._menu_hidden(m))
@@ -4826,6 +4980,7 @@ class MainWindow(QtWidgets.QWidget):
         # The mosaic menu is built before the canvas exists, so the strength slider joins
         # it here rather than reaching for a canvas that isn't there yet.
         blur_strength_action(self.canvas, self._main_tool_groups["mosaic"][1])
+        arrow_style_action(self.canvas, self._main_tool_groups["line"][1])
         self.canvas.cropRequested.connect(self._do_crop)
         self.canvas.textSelected.connect(self._on_text_selected)
         self.canvas.picktextNeedsWords.connect(self._ensure_word_boxes)
