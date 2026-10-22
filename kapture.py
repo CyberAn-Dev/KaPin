@@ -193,6 +193,7 @@ TR = {
     "lab_speed": {"zh": "滚速", "en": "Speed"},
     "lab_width": {"zh": "线宽", "en": "Width"},
     "lab_strength": {"zh": "强度", "en": "Strength"},
+    "lab_opacity": {"zh": "不透明度", "en": "Opacity"},
     "lab_arrow_style": {"zh": "样式", "en": "Style"},
     "arrow_v": {"zh": "开口 V", "en": "Open V"},
     "arrow_solid": {"zh": "实心三角", "en": "Solid"},
@@ -208,6 +209,7 @@ TR = {
     "a_text": {"zh": "文字", "en": "Text"},
     "a_number": {"zh": "序号", "en": "Number"},
     "a_highlight": {"zh": "高亮", "en": "Highlight"},
+    "a_spot": {"zh": "聚光灯", "en": "Spotlight"},
     "a_blur": {"zh": "打码", "en": "Blur"},
     "a_gaussian_blur": {"zh": "高斯模糊", "en": "Gaussian blur"},
     "a_magnify": {"zh": "放大镜", "en": "Magnifier"},
@@ -442,6 +444,55 @@ def blur_strength_action(canvas, menu):
     return action
 
 
+def _alpha_percent(alpha):
+    """Alpha 0..255 as the percentage number the slider works in."""
+    return round(alpha * 100 / AnnotateCanvas.HIGHLIGHT_MAX_ALPHA)
+
+
+def highlight_alpha_action(canvas, menu):
+    """An opacity slider for the highlighter, inside the menu it belongs to.
+
+    The slider is a percentage rather than a raw 0..255 alpha, which is what a person
+    reaching for "how see-through" actually wants; it converts on the way in and out.
+    Same read-on-open convention as the other two controls, so it cannot drift from what
+    the region under selection is actually using.
+    """
+    action = QtWidgets.QWidgetAction(menu)
+    action.setObjectName("setting:highlight_alpha")
+    widget = QtWidgets.QWidget(menu)
+    row = QtWidgets.QHBoxLayout(widget)
+    row.setContentsMargins(12, 2, 12, 2)
+    row.setSpacing(8)
+    name = QtWidgets.QLabel(t("lab_opacity"), widget)
+    slider = QtWidgets.QSlider(Qt.Horizontal, widget)
+    slider.setObjectName("highlightAlphaSlider")
+    slider.setRange(0, 100)
+    slider.setFixedWidth(110)
+    readout = QtWidgets.QLabel(f"{_alpha_percent(canvas.highlight_alpha)}%", widget)
+    readout.setFixedWidth(28)
+    readout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    row.addWidget(name)
+    row.addWidget(slider)
+    row.addWidget(readout)
+    action.setDefaultWidget(widget)
+
+    def show_event(_action=None):
+        name.setText(t("lab_opacity"))        # the menu is built once; the language may not be
+        slider.blockSignals(True)
+        slider.setValue(_alpha_percent(canvas.highlight_alpha))
+        slider.blockSignals(False)
+        readout.setText(f"{_alpha_percent(canvas.highlight_alpha)}%")
+
+    def changed(value):
+        readout.setText(f"{value}%")
+        canvas.set_highlight_alpha(round(value * AnnotateCanvas.HIGHLIGHT_MAX_ALPHA / 100))
+
+    slider.valueChanged.connect(changed)
+    menu.aboutToShow.connect(show_event)
+    menu.addAction(action)
+    return action
+
+
 def swatch_icon(color, size=20):
     """A rounded color-swatch icon, used as the "current annotation color" button."""
     pm = QtGui.QPixmap(size, size)
@@ -559,6 +610,14 @@ def line_icon(name, color="#d2d2da", size=22):
         for x,y in [(14,6),(19,11),(11,19),(6,14)]:
             path.lineTo(Pt(x,y))
         p.drawPath(path);L(5,19,8,16);L(4,21,12,21)
+    elif name == "spot":
+        # A lit rectangle with the surrounding picture recessed: solid core, faint corners.
+        p.setPen(QtGui.QPen(QtGui.QColor(color), size * 1.65 / 24.0, Qt.DashLine))
+        Rr(2.5, 2.5, 19, 19, 1.5)
+        p.setPen(pen)
+        p.setBrush(QtGui.QColor(color))
+        Rr(7.5, 7.5, 9, 9, 1.2)
+        p.setBrush(Qt.NoBrush)
     elif name == "blur":
         for x,y in [(5,5),(13,5),(5,13),(13,13)]:
             Rr(x,y,6,6,1.2)
@@ -1904,6 +1963,10 @@ class AnnotateCanvas(QtWidgets.QWidget):
     MOSAIC_BLOCK_MAX = 200          # mosaic block size cap, in px
     GAUSSIAN_KERNEL_MAX = 199       # odd, Gaussian kernel size cap, in px
     BLUR_CACHE_BYTES = 48 * 1024 * 1024   # ceiling for cached blurred tiles
+    # Highlighter opacity is its own axis, 0..255, anchored at the alpha it shipped with.
+    HIGHLIGHT_MAX_ALPHA = 255
+    HIGHLIGHT_DEFAULT_ALPHA = 80
+    SPOT_DIM_ALPHA = 140              # how far the picture recesses outside a spotlight
 
     def __init__(self):
         super().__init__()
@@ -1928,6 +1991,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         self.blur_style = "pixelate"
         self.blur_strength = self.BLUR_DEFAULT_STRENGTH   # independent of pen width
         self.arrow_style = "v"
+        self.highlight_alpha = self.HIGHLIGHT_DEFAULT_ALPHA   # independent of color/width
         # Blurred tiles for committed regions, keyed by region + parameters. Assigning to
         # base clears this, so it can never serve a tile from a superseded screenshot.
         self._blur_cache = OrderedDict()
@@ -2035,6 +2099,21 @@ class AnnotateCanvas(QtWidgets.QWidget):
             if item.get("arrow_style", "v") != style:
                 before = self._content_state()
                 item["arrow_style"] = style
+                self._commit_change(before)
+
+    def set_highlight_alpha(self, alpha):
+        """Opacity for the next highlight; a selected highlight is restyled in place.
+
+        Kept apart from color on purpose: the swatch picks a hue, this picks how much of
+        the page still shows through it. Neither path can clobber the other.
+        """
+        alpha = max(0, min(self.HIGHLIGHT_MAX_ALPHA, int(alpha)))
+        self.highlight_alpha = alpha
+        if self._valid_selection() and self.items[self._selected_item].get("type") == "highlight":
+            item = self.items[self._selected_item]
+            if item.get("highlight_alpha", self.HIGHLIGHT_DEFAULT_ALPHA) != alpha:
+                before = self._content_state()
+                item["highlight_alpha"] = alpha
                 self._commit_change(before)
 
     @staticmethod
@@ -2199,6 +2278,86 @@ class AnnotateCanvas(QtWidgets.QWidget):
         self.setMaximumSize(QtWidgets.QWIDGETSIZE_MAX, QtWidgets.QWIDGETSIZE_MAX)
         self.resize(self.parent().size() if self.parent() else QtCore.QSize(400, 300))
 
+    #: What a spotlight is allowed to darken. Mosaic rewrites pixels rather than annotating
+    #: them, so it has to be laid down first or its opaque tile would undo the veil. Arrow,
+    #: text, number and highlight stay above on purpose: they must remain readable in the
+    #: dark, and keeping them above makes that true regardless of drawing order. "spot" is
+    #: listed because it paints nothing itself; the veil is drawn separately.
+    SPOT_UNDERNEATH = ("blur", "spot")
+
+    def _spot_regions(self, items):
+        """The lit rectangles of every spotlight in `items`, in image coordinates."""
+        rects = []
+        for it in items:
+            if isinstance(it, dict) and it.get("type") == "spot":
+                r = QtCore.QRectF(it["a"], it["b"]).normalized()
+                if r.width() > 0 and r.height() > 0:
+                    rects.append(r)
+        return rects
+
+    def _draw_spot_masks(self, p, bounds, rects):
+        """Recess everything outside the spotlights, in a single pass.
+
+        Odd-even fill turns "the whole picture minus the lit rectangles" into one shape, so
+        the veil cannot stack where two spotlights meet and both regions stay at full
+        brightness. The lit rectangles are merged first because odd-even counts crossings:
+        a point inside two overlapping rects would read as covered and go dark again.
+        """
+        if not rects:
+            return
+        lit = QtGui.QRegion()           # QRegion is in QtGui on Qt5
+        for r in rects:
+            on_image = r.intersected(bounds)
+            if on_image.isEmpty():
+                continue                # an off-image region lights nothing, so it cuts no hole
+            lit = lit.united(QtGui.QRegion(on_image.toAlignedRect()))
+        path = QtGui.QPainterPath()
+        path.addRect(bounds)
+        for r in lit.rects():          # QRegion.rects() is already non-overlapping
+            path.addRect(QtCore.QRectF(r))
+        path.setFillRule(QtCore.Qt.OddEvenFill)
+        p.save()
+        p.setPen(Qt.NoPen)
+        p.setBrush(QtGui.QColor(0, 0, 0, self.SPOT_DIM_ALPHA))
+        p.drawPath(path)
+        p.restore()
+
+    def _draw_spot_pass(self, p, items, bounds, skip_index=None, dragging=None):
+        """Draw `items` in the order a spotlight dictates, veil included.
+
+        With no spotlight on the canvas this is the plain single ordered pass it always
+        was, so an image without one cannot shift a single pixel. Only once a spotlight
+        exists do the layers split, and then both preview and export go through here, so
+        they cannot drift apart.
+
+        `dragging` is the uncommitted region being dragged, which only the preview passes;
+        it joins the layer its own type belongs to, so a blur dragged over an existing
+        spotlight cannot undo the veil either.
+        """
+        spots = self._spot_regions(items)
+        if dragging is not None:
+            spots += self._spot_regions([dragging])
+        if not spots:
+            for index, it in enumerate(items):
+                if index != skip_index:
+                    self._draw_item(p, it)
+            if dragging is not None:
+                self._draw_item(p, dragging, cacheable=False)
+            return
+        def underneath(it):
+            return it.get("type") in self.SPOT_UNDERNEATH
+        for index, it in enumerate(items):
+            if index != skip_index and underneath(it):
+                self._draw_item(p, it)
+        if dragging is not None and underneath(dragging):
+            self._draw_item(p, dragging, cacheable=False)
+        self._draw_spot_masks(p, bounds, spots)
+        for index, it in enumerate(items):
+            if index != skip_index and not underneath(it):
+                self._draw_item(p, it)
+        if dragging is not None and not underneath(dragging):
+            self._draw_item(p, dragging, cacheable=False)
+
     def render_flattened(self):
         """Return a QImage with annotations baked in (1:1 pixels)."""
         self._finish_text()
@@ -2207,8 +2366,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         out = self.base.copy()
         p = QtGui.QPainter(out)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
-        for it in self.items:
-            self._draw_item(p, it)
+        self._draw_spot_pass(p, self.items, QtCore.QRectF(out.rect()))
         p.end()
         return out
 
@@ -2229,15 +2387,15 @@ class AnnotateCanvas(QtWidgets.QWidget):
         p.setRenderHint(QtGui.QPainter.SmoothPixmapTransform)
         p.scale(self.scale, self.scale)
         p.drawImage(0, 0, self.base)
-        for index, it in enumerate(self.items):
-            if self._text_editor is None or index != self._text_index:
-                self._draw_item(p, it)
+        self._draw_spot_pass(
+            p, self.items, QtCore.QRectF(self.base.rect()),
+            skip_index=(self._text_index if self._text_editor is not None else None),
+            dragging=self.cur or None)
         if self.cur:
-            self._draw_item(p, self.cur, cacheable=False)
             # A region with no outline is invisible against busy content, so the box being
             # dragged gets the same dashed frame as the selection. Preview only: cur never
             # reaches render_flattened, so the exported image stays clean.
-            if self.cur.get("type") == "blur":
+            if self.cur.get("type") in ("blur", "spot"):
                 p.save()
                 self._draw_selection(p, self.cur)
                 p.restore()
@@ -2290,7 +2448,9 @@ class AnnotateCanvas(QtWidgets.QWidget):
     def _draw_highlight(self, p, it):
         r = QtCore.QRectF(it["a"], it["b"]).normalized()
         c = QtGui.QColor(it["color"])
-        c.setAlpha(80)                              # semi-transparent, like a highlighter
+        # Semi-transparent like a highlighter; the exact opacity is the item's own, so an
+        # older saved region without the field keeps the look it was drawn with.
+        c.setAlpha(it.get("highlight_alpha", self.HIGHLIGHT_DEFAULT_ALPHA))
         p.setPen(Qt.NoPen)
         p.setBrush(c)
         p.drawRect(r)
@@ -2509,7 +2669,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
             font = QtGui.QFont(self.font())
             font.setPixelSize(max(12, item.get("width", self.width) * 6))
             path.addText(a, font, item.get("text", ""))
-        elif kind in ("highlight", "blur"):
+        elif kind in ("highlight", "blur", "spot"):
             path.addRect(QtCore.QRectF(a, b).normalized())
         elif kind == "number":
             radius = max(12.0, item.get("width", self.width) * 4.0)
@@ -2524,7 +2684,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         path = self._item_path(item)
         if path.isEmpty():
             return False
-        if item.get("type") in ("highlight", "blur", "number", "magnify"):
+        if item.get("type") in ("highlight", "blur", "spot", "number", "magnify"):
             if path.contains(point):
                 return True
         stroker = QtGui.QPainterPathStroker()
@@ -2600,6 +2760,8 @@ class AnnotateCanvas(QtWidgets.QWidget):
             base["blur_strength"] = self.blur_strength
         if self.tool == "arrow":
             base["arrow_style"] = self.arrow_style
+        if self.tool == "highlight":
+            base["highlight_alpha"] = self.highlight_alpha
         if self.tool == "pen":
             self.cur = dict(base, type="pen", pts=[pt])
         else:
@@ -2792,7 +2954,7 @@ class EditTools(QtWidgets.QFrame):
     _retired = set()
 
     _tool_names = ('select', 'picktext', 'rect', 'ellipse', 'arrow', 'line', 'pen',
-                   'text', 'number', 'highlight', 'blur', 'gaussian', 'magnify', 'crop')
+                   'text', 'number', 'highlight', 'spot', 'blur', 'gaussian', 'magnify', 'crop')
 
     def __init__(self, canvas, parent=None, compact=False):
         super().__init__(parent)
@@ -2911,7 +3073,7 @@ class EditTools(QtWidgets.QFrame):
 
         groups = [
             ('shape', 'rect', ('rect', 'ellipse')),
-            ('stroke', 'pen', ('pen', 'highlight')),
+            ('stroke', 'pen', ('pen', 'highlight', 'spot')),
             ('line', 'arrow', ('arrow', 'line')),
             ('text', 'text', ('text', 'number')),
             ('magnify', 'magnify', ('magnify',)),
@@ -2941,6 +3103,8 @@ class EditTools(QtWidgets.QFrame):
                 blur_strength_action(self.canvas, menu)
             if key == 'line':
                 arrow_style_action(self.canvas, menu)
+            if key == 'stroke':
+                highlight_alpha_action(self.canvas, menu)
             self.group_actions[key] = actions
             self._compact_groups[key] = (button, menu, tuple(names))
             menu.aboutToHide.connect(lambda m=menu: self._menu_hidden(m))
@@ -4818,7 +4982,7 @@ class MainWindow(QtWidgets.QWidget):
         self.tool_group.setExclusive(True)
         self._tool_btns = {}
         for name in ["picktext", "select", "rect", "ellipse", "arrow", "line", "pen",
-                     "text", "number", "highlight", "blur", "magnify", "crop"]:
+                     "text", "number", "highlight", "spot", "blur", "magnify", "crop"]:
             b = self._tbtn(name, "", checkable=True)
             b.setObjectName("legacyTool_" + name)
             b.hide()
@@ -4828,7 +4992,7 @@ class MainWindow(QtWidgets.QWidget):
 
         grouped_tools = (
             ("shape", "rect", ("rect", "ellipse")),
-            ("stroke", "pen", ("pen", "highlight")),
+            ("stroke", "pen", ("pen", "highlight", "spot")),
             ("line", "arrow", ("arrow", "line")),
             ("text", "text", ("text", "number")),
             ("mosaic", "blur", ("blur", "gaussian")),
@@ -4981,6 +5145,7 @@ class MainWindow(QtWidgets.QWidget):
         # it here rather than reaching for a canvas that isn't there yet.
         blur_strength_action(self.canvas, self._main_tool_groups["mosaic"][1])
         arrow_style_action(self.canvas, self._main_tool_groups["line"][1])
+        highlight_alpha_action(self.canvas, self._main_tool_groups["stroke"][1])
         self.canvas.cropRequested.connect(self._do_crop)
         self.canvas.textSelected.connect(self._on_text_selected)
         self.canvas.picktextNeedsWords.connect(self._ensure_word_boxes)

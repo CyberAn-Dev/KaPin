@@ -6,7 +6,7 @@
 
 - **Region capture**: drag a box, resize with eight handles and a pixel loupe, then annotate immediately in place — no separate editor window in the way.
 - **Window capture**: click a window to capture it whole.
-- **Annotation**: rectangle, ellipse, arrow (four head styles), line, pen, text, numbered steps, highlight, blur/mosaic (to hide sensitive info) with adjustable intensity, magnifier, crop — with adjustable color and line width, undo/redo, and double-click to edit text on the canvas.
+- **Annotation**: rectangle, ellipse, arrow (four head styles), line, pen, text, numbered steps, highlight with adjustable opacity, spotlight (dims the picture around a region you choose), blur/mosaic (to hide sensitive info) with adjustable intensity, magnifier, crop — with adjustable color and line width, undo/redo, and double-click to edit text on the canvas.
 - **OCR text recognition**: Tesseract-powered, recognizes Simplified Chinese, Traditional Chinese, and English; runs automatically when a capture opens in the editor, supports drag-selecting words on an image, and can grab text from a screen region straight to the clipboard. Layout modes and image enhancement improve accuracy.
 - **Scrolling long screenshot (auto)**: KaPin auto-scrolls a target window and stitches frames into one tall, seamless image — ideal for web pages, chat logs, code, and documents.
 - **Scrolling long screenshot (manual)**: the user scrolls and KaPin stitches, with a live preview that skips rows already captured.
