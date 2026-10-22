@@ -194,11 +194,14 @@ TR = {
     "lab_width": {"zh": "线宽", "en": "Width"},
     "lab_strength": {"zh": "强度", "en": "Strength"},
     "lab_opacity": {"zh": "不透明度", "en": "Opacity"},
-    "lab_arrow_style": {"zh": "样式", "en": "Style"},
     "arrow_v": {"zh": "开口 V", "en": "Open V"},
     "arrow_solid": {"zh": "实心三角", "en": "Solid"},
     "arrow_tapered": {"zh": "锥形", "en": "Tapered"},
     "arrow_needle": {"zh": "细尖", "en": "Needle"},
+    "dash_solid": {"zh": "实线", "en": "Solid"},
+    "dash_dash": {"zh": "虚线", "en": "Dashed"},
+    "dash_dot": {"zh": "点线", "en": "Dotted"},
+    "dash_dashdot": {"zh": "点划线", "en": "Dash dot"},
     "lab_output": {"zh": "输出", "en": "Output"},
     # Annotation
     "a_rect": {"zh": "矩形", "en": "Rectangle"},
@@ -351,54 +354,131 @@ def arrow_style_icon(style, size=22, color="#d2d2da"):
     return QtGui.QIcon(pm)
 
 
-def arrow_style_action(canvas, menu):
-    """A row of style buttons inside the arrow menu, like the blur strength slider.
+def dash_style_icon(style, size=22, color="#d2d2da"):
+    """Thumbnail of one line pattern, drawn with the same pen style as the canvas."""
+    pm = QtGui.QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.Antialiasing)
+    pen = QtGui.QPen(QtGui.QColor(color), 1.6,
+                     AnnotateCanvas._DASH_PENS.get(style, Qt.SolidLine),
+                     Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen)
+    p.drawLine(QtCore.QPointF(size * 0.1, size * 0.5),
+               QtCore.QPointF(size * 0.9, size * 0.5))
+    p.end()
+    return QtGui.QIcon(pm)
 
-    Buttons show which style is live when the menu opens; a click restyles the next
-    arrow, or the selected one.
+
+def _style_button(parent, object_name, icon, tip, on_click):
+    button = QtWidgets.QToolButton(parent)
+    button.setObjectName(object_name)
+    button.setIcon(icon)
+    button.setIconSize(QtCore.QSize(20, 20))
+    button.setFixedSize(28, 24)
+    button.setAutoRaise(True)
+    button.setToolTip(tip)
+    button.setCheckable(True)
+    button.clicked.connect(lambda _checked=False: on_click())
+    return button
+
+
+def line_style_rows(canvas, menu, actions, color="#d2d2da"):
+    """Put each line tool's own styles on the end of its own row in the line menu.
+
+    The arrow row carries the four arrow heads, the line row the four dash patterns, so
+    picking a tool and picking how it looks happen in one place rather than in two menus.
+    Each row replaces the plain menu item it stands for (that action stays, hidden, because
+    the exclusive action group and every existing sync path read it), which also keeps the
+    row from drifting away from its tool if the menu is ever reordered.
+
+    Returns {tool: (row_action, tool_button, {style: button}, spec)} for `sync_style_rows`.
     """
-    action = QtWidgets.QWidgetAction(menu)
-    action.setObjectName("setting:arrow_style")
-    widget = QtWidgets.QWidget(menu)
-    row = QtWidgets.QHBoxLayout(widget)
-    row.setContentsMargins(12, 2, 12, 2)
-    row.setSpacing(4)
-    row.addWidget(QtWidgets.QLabel(t("lab_arrow_style"), widget))
-    buttons = {}
-    group = QtWidgets.QButtonGroup(widget)      # exclusive: two live styles would lie
-    group.setExclusive(True)
-    for style in AnnotateCanvas.ARROW_STYLES:
-        button = QtWidgets.QToolButton(widget)
-        button.setObjectName("arrowStyle_" + style)
-        button.setIcon(arrow_style_icon(style))
-        button.setIconSize(QtCore.QSize(20, 20))
-        button.setFixedSize(28, 24)
-        button.setAutoRaise(True)
-        button.setToolTip(t("arrow_" + style))
-        button.setCheckable(True)
-        button.clicked.connect(lambda _c=False, name=style: canvas.set_arrow_style(name))
-        row.addWidget(button)
-        group.addButton(button)
-        buttons[style] = button
-    action.setDefaultWidget(widget)
+    specs = {
+        "arrow": {"tool": "arrow", "action": actions["arrow"],
+                  "styles": AnnotateCanvas.ARROW_STYLES,
+                  "prefix": "arrow", "tool_label": "a_arrow", "color": color,
+                  "icon": lambda name, tint=color: (
+                      line_icon(name, tint, size=22) if name == "arrow"
+                      else arrow_style_icon(name, color=tint)),
+                  "labels": lambda style: t("arrow_" + style),
+                  "current": lambda: canvas.arrow_style,
+                  "apply": canvas.set_arrow_style},
+        "line": {"tool": "line", "action": actions["line"],
+                 "styles": AnnotateCanvas.DASH_STYLES,
+                 "prefix": "dash", "tool_label": "a_line", "color": color,
+                 "icon": lambda name, tint=color: (
+                     line_icon(name, tint, size=22) if name == "line"
+                     else dash_style_icon(name, color=tint)),
+                 "labels": lambda style: t("dash_" + style),
+                 "current": lambda: canvas.dash_style,
+                 "apply": canvas.set_dash_style},
+    }
+    rows = {}
+    for tool, spec in specs.items():
+        action = QtWidgets.QWidgetAction(menu)
+        action.setObjectName("setting:" + spec["prefix"] + "_style")
+        widget = QtWidgets.QWidget(menu)
+        widget.setObjectName(spec["prefix"] + "StyleRow")
+        row = QtWidgets.QHBoxLayout(widget)
+        row.setContentsMargins(12, 2, 8, 2)
+        row.setSpacing(4)
 
-    label = row.itemAt(0).widget()
+        tool_button = QtWidgets.QToolButton(widget)
+        tool_button.setObjectName(spec["prefix"] + "Tool")
+        tool_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        tool_button.setAutoRaise(True)
+        tool_button.setCheckable(True)
+        tool_button.setCursor(Qt.PointingHandCursor)
+        # bind the action per iteration: both rows share this loop variable
+        tool_button.clicked.connect(lambda _checked=False, act=spec["action"]:
+                                    act.trigger())
+        row.addWidget(tool_button)
+        row.addStretch(1)
 
-    def show_event(_action=None):
-        label.setText(t("lab_arrow_style"))                    # menu is built once per language
-        for name, button in buttons.items():
-            button.setIcon(arrow_style_icon(name))
-            button.setToolTip(t("arrow_" + name))
-        live = buttons.get(canvas.arrow_style)
+        buttons = {}
+        group = QtWidgets.QButtonGroup(widget)      # exclusive: two live styles would lie
+        group.setExclusive(True)
+        for style in spec["styles"]:
+            button = _style_button(widget, spec["prefix"] + "Style_" + style,
+                                   spec["icon"](style), spec["labels"](style),
+                                   lambda name=style, apply=spec["apply"]: apply(name))
+            row.addWidget(button)
+            group.addButton(button)
+            buttons[style] = button
+
+        action.setDefaultWidget(widget)
+        spec["action"].setVisible(False)            # the row is the control now
+        following = menu.actions()[menu.actions().index(spec["action"]) + 1:]
+        menu.insertAction(following[0] if following else None, action)
+        rows[tool] = (action, tool_button, buttons, spec)
+
+    menu.aboutToShow.connect(lambda _a=None: sync_style_rows(rows))
+    sync_style_rows(rows)              # correct labels and live state before the first open
+    return rows
+
+
+def sync_style_rows(rows, color=None):
+    """Retexture style rows: labels follow the language, lit buttons follow the canvas.
+
+    Runs when the menu opens, when the tool changes and when the theme recolours icons.
+    Reading the canvas rather than tracking a signal means a row can never advertise a value
+    the next drawing won't use.
+    """
+    for _tool, (_action, tool_button, buttons, spec) in rows.items():
+        tint = color or spec["color"]
+        tool_button.setIcon(spec["icon"](spec["tool"], tint))
+        tool_button.setText(t(spec["tool_label"]))
+        tool_button.setChecked(spec["action"].isChecked())
+        for style, button in buttons.items():
+            button.setIcon(spec["icon"](style, tint))
+            button.setToolTip(spec["labels"](style))
+        live = buttons.get(spec["current"]())
         if live is not None:
-            live.setChecked(True)          # the group is exclusive, so this clears the rest
-        else:                              # a canvas value this row can't represent: show none
+            live.setChecked(True)      # the group is exclusive, so this clears the rest
+        else:                          # a value this row can't represent: show none
             for button in buttons.values():
                 button.setChecked(False)
-
-    menu.aboutToShow.connect(show_event)
-    menu.addAction(action)
-    return action
 
 
 def blur_strength_action(canvas, menu):
@@ -1968,6 +2048,12 @@ class AnnotateCanvas(QtWidgets.QWidget):
     HIGHLIGHT_DEFAULT_ALPHA = 80
     SPOT_DIM_ALPHA = 140              # how far the picture recesses outside a spotlight
 
+    #: Pen styles for the straight line. "solid" first: it is the default and the only
+    #: pattern any drawing made before styles existed, so a missing field means solid.
+    DASH_STYLES = ("solid", "dash", "dot", "dashdot")
+    _DASH_PENS = {"solid": Qt.SolidLine, "dash": Qt.DashLine, "dot": Qt.DotLine,
+                  "dashdot": Qt.DashDotLine}
+
     def __init__(self):
         super().__init__()
         self._text_editor = None
@@ -1991,6 +2077,7 @@ class AnnotateCanvas(QtWidgets.QWidget):
         self.blur_style = "pixelate"
         self.blur_strength = self.BLUR_DEFAULT_STRENGTH   # independent of pen width
         self.arrow_style = "v"
+        self.dash_style = "solid"
         self.highlight_alpha = self.HIGHLIGHT_DEFAULT_ALPHA   # independent of color/width
         # Blurred tiles for committed regions, keyed by region + parameters. Assigning to
         # base clears this, so it can never serve a tile from a superseded screenshot.
@@ -2114,6 +2201,23 @@ class AnnotateCanvas(QtWidgets.QWidget):
             if item.get("highlight_alpha", self.HIGHLIGHT_DEFAULT_ALPHA) != alpha:
                 before = self._content_state()
                 item["highlight_alpha"] = alpha
+                self._commit_change(before)
+
+    def set_dash_style(self, style):
+        """Line pattern for the next straight line; a selected line is restyled in place.
+
+        Scoped to the line tool on purpose. Rectangles, ellipses and the freehand pen draw
+        through the same pen builder, and restyling them from a control in the line menu
+        would change things the user never touched.
+        """
+        if style not in self.DASH_STYLES:
+            return
+        self.dash_style = style
+        if self._valid_selection() and self.items[self._selected_item].get("type") == "line":
+            item = self.items[self._selected_item]
+            if item.get("dash_style", "solid") != style:
+                before = self._content_state()
+                item["dash_style"] = style
                 self._commit_change(before)
 
     @staticmethod
@@ -2419,7 +2523,18 @@ class AnnotateCanvas(QtWidgets.QWidget):
         elif t == "ellipse":
             p.drawEllipse(QtCore.QRectF(it["a"], it["b"]).normalized())
         elif t == "line":
-            p.drawLine(it["a"], it["b"])
+            dash = it.get("dash_style", "solid")
+            if dash != "solid":
+                # Only straight lines carry a pattern, so the swap is kept local instead of
+                # changing the shared pen every other shape builds.
+                pen = QtGui.QPen(p.pen())
+                pen.setStyle(self._DASH_PENS.get(dash, Qt.SolidLine))
+                p.save()
+                p.setPen(pen)
+                p.drawLine(it["a"], it["b"])
+                p.restore()
+            else:
+                p.drawLine(it["a"], it["b"])
         elif t == "arrow":
             self._draw_arrow(p, it["a"], it["b"], it["width"],
                              it.get("arrow_style", "v"))
@@ -2762,6 +2877,8 @@ class AnnotateCanvas(QtWidgets.QWidget):
             base["arrow_style"] = self.arrow_style
         if self.tool == "highlight":
             base["highlight_alpha"] = self.highlight_alpha
+        if self.tool == "line":
+            base["dash_style"] = self.dash_style
         if self.tool == "pen":
             self.cur = dict(base, type="pen", pts=[pt])
         else:
@@ -3102,7 +3219,7 @@ class EditTools(QtWidgets.QFrame):
             if key == 'mosaic':
                 blur_strength_action(self.canvas, menu)
             if key == 'line':
-                arrow_style_action(self.canvas, menu)
+                self._line_style_rows = line_style_rows(self.canvas, menu, actions)
             if key == 'stroke':
                 highlight_alpha_action(self.canvas, menu)
             self.group_actions[key] = actions
@@ -3270,6 +3387,9 @@ class EditTools(QtWidgets.QFrame):
                 action.setChecked(option == name)
         for tool_name, action in self._setting_tool_actions.items():
             action.setChecked(tool_name == name)
+        rows = getattr(self, '_line_style_rows', None)
+        if rows:
+            sync_style_rows(rows)
 
     def choose_color(self):
         dialog=QtWidgets.QColorDialog(self.canvas.color,self)
@@ -5144,7 +5264,9 @@ class MainWindow(QtWidgets.QWidget):
         # The mosaic menu is built before the canvas exists, so the strength slider joins
         # it here rather than reaching for a canvas that isn't there yet.
         blur_strength_action(self.canvas, self._main_tool_groups["mosaic"][1])
-        arrow_style_action(self.canvas, self._main_tool_groups["line"][1])
+        self._line_style_rows = line_style_rows(
+            self.canvas, self._main_tool_groups["line"][1],
+            self._main_tool_actions["line"], color=THEMES["dark"]["icon"])
         highlight_alpha_action(self.canvas, self._main_tool_groups["stroke"][1])
         self.canvas.cropRequested.connect(self._do_crop)
         self.canvas.textSelected.connect(self._on_text_selected)
@@ -5376,6 +5498,11 @@ class MainWindow(QtWidgets.QWidget):
             button.setIcon(icon)
             for action_name, action in self._main_tool_actions[key].items():
                 action.setIcon(line_icon(action_name, colors["icon"], size=22))
+        # Style thumbnails are baked pixmaps, so the rows retint rather than inherit.
+        if getattr(self, '_line_style_rows', None):
+            for _tool, (_action, _button, _buttons, spec) in self._line_style_rows.items():
+                spec["color"] = colors["icon"]     # keeps later syncs on this palette
+            sync_style_rows(self._line_style_rows)
         self._scroll_down_action.setIcon(line_icon("scroll_down", colors["icon"], size=22))
         self._scroll_up_action.setIcon(line_icon("scroll_up", colors["icon"], size=22))
         output_icons = {"ocr": "ocr", "copy": "copy", "pin": "pin",
