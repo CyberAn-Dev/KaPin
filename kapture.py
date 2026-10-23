@@ -3130,6 +3130,13 @@ class EditTools(QtWidgets.QFrame):
         self.line_width.setFixedWidth(54)
         self.line_width.setToolTip(t('lab_width'))
         self.line_width.valueChanged.connect(canvas.set_width)
+        if self.compact:
+            # The bar is one row of 40px squares; a default-sized swatch would sit proud
+            # of its neighbours. The width box keeps its own height, matching the menu row
+            # it used to live in.
+            self.color.setIconSize(QtCore.QSize(26, 26))
+            self.color.setFixedSize(40, 40)
+            self.color.setCursor(Qt.PointingHandCursor)
 
         self.actions = row if self.compact else QtWidgets.QHBoxLayout()
         self.actions.setSpacing(4)
@@ -3137,7 +3144,6 @@ class EditTools(QtWidgets.QFrame):
             layout.addLayout(self.actions)
 
         if self.compact:
-            self.color.hide()
             self._build_compact_tools(row)
             self._build_settings_menu()
         else:
@@ -3232,6 +3238,11 @@ class EditTools(QtWidgets.QFrame):
                 button.clicked.connect(lambda _checked=False,n=initial:self.set_tool(n))
             row.addWidget(button)
 
+        # Colour and width sit with the tools they apply to, exactly where the full bar
+        # puts them, rather than a couple of clicks away inside the settings menu.
+        row.addWidget(self.color)
+        row.addWidget(self.line_width)
+
         self.undo_button = self.action_button('undo', t('a_undo') + ' · Ctrl+Z', self.canvas.undo)
         settings_button = QtWidgets.QToolButton(self)
         settings_button.setIcon(self._icon('settings'))
@@ -3261,21 +3272,9 @@ class EditTools(QtWidgets.QFrame):
 
     def _build_settings_menu(self):
         menu = self.settings_menu
-        color_action = menu.addAction(swatch_icon(self.canvas.color), t('a_color'))
-        color_action.setObjectName('setting:color')
-        color_action.triggered.connect(self.choose_color)
-        width_action = QtWidgets.QWidgetAction(menu)
-        width_action.setObjectName('setting:width')
-        width_action.setText(t('lab_width'))
-        width_widget = QtWidgets.QWidget(menu)
-        width_layout = QtWidgets.QHBoxLayout(width_widget)
-        width_layout.setContentsMargins(12, 2, 12, 2)
-        width_label = QtWidgets.QLabel(t('lab_width'), width_widget)
-        width_layout.addWidget(width_label)
-        width_layout.addWidget(self.line_width)
-        width_action.setDefaultWidget(width_widget)
-        menu.addAction(width_action)
-        menu.addSeparator()
+        # Colour and line width used to live here. They are on the bar now, where the
+        # tools they affect are visible, so the menu starts at the commands that genuinely
+        # need a menu: the two tool aliases and the history commands.
         for name in ('picktext', 'crop'):
             action = self._make_tool_action(menu, name)
             action.setObjectName('tool:' + name)
@@ -3391,6 +3390,14 @@ class EditTools(QtWidgets.QFrame):
         if rows:
             sync_style_rows(rows)
 
+    def _sync_color_swatch(self):
+        """Repaint the swatch from the canvas rather than from whatever was just picked.
+
+        The swatch is the only readout of the colour the next stroke will use, so it has to
+        be derived from the canvas -- the same source the drawing code reads.
+        """
+        self.color.setIcon(swatch_icon(self.canvas.color))
+
     def choose_color(self):
         dialog=QtWidgets.QColorDialog(self.canvas.color,self)
         dialog.setOption(QtWidgets.QColorDialog.DontUseNativeDialog,True)
@@ -3401,12 +3408,8 @@ class EditTools(QtWidgets.QFrame):
         color=dialog.selectedColor() if accepted else QtGui.QColor()
         dialog.deleteLater()
         if color.isValid():
-            self.canvas.set_color(color); self.color.setIcon(swatch_icon(color))
-            if self.compact:
-                for action in self.settings_menu.actions():
-                    if action.objectName() == 'setting:color':
-                        action.setIcon(swatch_icon(color))
-                        break
+            self.canvas.set_color(color)
+            self._sync_color_swatch()
 
     def invalidate_words(self):
         self._generation += 1
