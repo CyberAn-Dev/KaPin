@@ -383,7 +383,21 @@ def _style_button(parent, object_name, icon, tip, on_click):
     return button
 
 
-def line_style_rows(canvas, menu, actions, color="#d2d2da"):
+def _pick_style(style, apply, tool_action, on_pick):
+    """One click on a style button: apply that style and switch to its tool.
+
+    The style goes in first. Both setters restyle the selected item when its type matches,
+    and switching tools clears the selection -- applying afterwards would silently drop the
+    restyle someone gets by clicking a pattern while an existing line is selected.
+    """
+    apply(style)
+    if not tool_action.isChecked():
+        tool_action.trigger()
+    if on_pick is not None:
+        on_pick()
+
+
+def line_style_rows(canvas, menu, actions, color="#d2d2da", on_pick=None):
     """Put each line tool's own styles on the end of its own row in the line menu.
 
     The arrow row carries the four arrow heads, the line row the four dash patterns, so
@@ -391,6 +405,10 @@ def line_style_rows(canvas, menu, actions, color="#d2d2da"):
     Each row replaces the plain menu item it stands for (that action stays, hidden, because
     the exclusive action group and every existing sync path read it), which also keeps the
     row from drifting away from its tool if the menu is ever reordered.
+
+    ``on_pick`` closes the menu after a style is chosen. A style button both selects its
+    tool and sets the style in one click -- there is no point leaving the menu up for a
+    second interaction, and unlike a plain item a QToolButton will not close it by itself.
 
     Returns {tool: (row_action, tool_button, {style: button}, spec)} for `sync_style_rows`.
     """
@@ -440,9 +458,11 @@ def line_style_rows(canvas, menu, actions, color="#d2d2da"):
         group = QtWidgets.QButtonGroup(widget)      # exclusive: two live styles would lie
         group.setExclusive(True)
         for style in spec["styles"]:
-            button = _style_button(widget, spec["prefix"] + "Style_" + style,
-                                   spec["icon"](style), spec["labels"](style),
-                                   lambda name=style, apply=spec["apply"]: apply(name))
+            button = _style_button(
+                widget, spec["prefix"] + "Style_" + style,
+                spec["icon"](style), spec["labels"](style),
+                lambda name=style, apply=spec["apply"], act=spec["action"]:
+                _pick_style(name, apply, act, on_pick))
             row.addWidget(button)
             group.addButton(button)
             buttons[style] = button
@@ -3272,7 +3292,8 @@ class EditTools(QtWidgets.QFrame):
             if key == 'mosaic':
                 blur_strength_action(self.canvas, menu)
             if key == 'line':
-                self._line_style_rows = line_style_rows(self.canvas, menu, actions)
+                self._line_style_rows = line_style_rows(self.canvas, menu, actions,
+                                                        on_pick=menu.close)
             if key == 'stroke':
                 highlight_alpha_action(self.canvas, menu)
             self.group_actions[key] = actions
@@ -5316,7 +5337,8 @@ class MainWindow(QtWidgets.QWidget):
         blur_strength_action(self.canvas, self._main_tool_groups["mosaic"][1])
         self._line_style_rows = line_style_rows(
             self.canvas, self._main_tool_groups["line"][1],
-            self._main_tool_actions["line"], color=THEMES["dark"]["icon"])
+            self._main_tool_actions["line"], color=THEMES["dark"]["icon"],
+            on_pick=self._main_tool_groups["line"][1].close)
         highlight_alpha_action(self.canvas, self._main_tool_groups["stroke"][1])
         self.canvas.cropRequested.connect(self._do_crop)
         self.canvas.textSelected.connect(self._on_text_selected)
