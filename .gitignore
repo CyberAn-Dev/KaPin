@@ -32,3 +32,6 @@ build_deb.sh
 
 # 本地测试套件,不随正式仓库发布
 tests/
+
+# 本机可选依赖装载（见 run.sh），不含可分发内容
+run.sh.local
