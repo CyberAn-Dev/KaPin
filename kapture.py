@@ -1060,11 +1060,52 @@ def qimage_to_bgr(qimg):
     return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
 
+def _window_shadow_extents(disp, win):
+    """(left, right, top, bottom) CSD shadow the compositor composites around ``win``,
+    or None when it declares none.
+
+    ``_GTK_FRAME_EXTENTS`` is the client-side-decoration counterpart to the
+    ``_NET_FRAME_EXTENTS`` a reparenting window manager sets for its title bar. Only the
+    former is invisible padding -- a translucent drop shadow over the desktop -- so it is
+    the only one a capture should trim. A WM title bar is real content that users expect
+    in a window grab, which is why this never reads ``_NET_FRAME_EXTENTS``.
+    """
+    try:
+        from Xlib import X as _X
+        prop = win.get_full_property(disp.intern_atom("_GTK_FRAME_EXTENTS"),
+                                     _X.AnyPropertyType)
+        vals = list(prop.value) if prop else []
+        if len(vals) != 4 or any(int(v) < 0 for v in vals):
+            return None                     # absent, malformed or negative: trust nothing
+        l, r, t, b = (int(v) for v in vals)
+        return (l, r, t, b) if (l or r or t or b) else None
+    except Exception:                       # noqa: BLE001  (dead window, no X)
+        return None
+
+
+def _trim_shadow(rect, extents):
+    """Shrink a frame rect (x, y, w, h) to the window's visible bounds.
+
+    ``extents`` comes from ``_window_shadow_extents``; None leaves the rect alone. Values
+    that would eat the window instead of its shadow leave it untouched too -- a sliver is
+    worse than one ring of shadow.
+    """
+    if not extents:
+        return rect
+    l, r, t, b = extents
+    x, y, w, h = rect
+    nw, nh = w - l - r, h - t - b
+    if nw < 2 or nh < 2:
+        return rect
+    return (x + l, y + t, nw, nh)
+
+
 def get_window_geom_at_pointer():
     """Return the physical geometry (x, y, w, h) of the top-level window under the mouse pointer, or None on failure.
 
     Use Xlib to get the window under the pointer, then walk up to root's direct child (i.e. the
-    top-level window with the border), whose geometry includes the title bar.
+    top-level window with the border), whose geometry includes the title bar. The compositor's
+    drop shadow is trimmed so the grab ends at the window's visible edge.
     """
     try:
         from Xlib import display as _disp
@@ -1084,10 +1125,11 @@ def get_window_geom_at_pointer():
         tc = cur.translate_coords(root, 0, 0)
         # translate_coords returns cur's origin offset relative to root (negate to get absolute)
         x, y = -tc.x, -tc.y
+        shadow = _window_shadow_extents(d, cur)
         d.close()
         if geo.width < 2 or geo.height < 2:
             return None
-        return (int(x), int(y), int(geo.width), int(geo.height))
+        return _trim_shadow((int(x), int(y), int(geo.width), int(geo.height)), shadow)
     except Exception:                       # noqa: BLE001
         return None
 
@@ -1096,8 +1138,9 @@ def list_visible_windows():
     """Top-to-bottom list of physical (x, y, w, h) rects of viewable normal top-level windows.
 
     Enumerates root's direct children once (the same frame windows the existing
-    window capture returns, title bar included). Override-redirect windows (menus,
-    tooltips, our own bypass-WM overlays) and unmapped/tiny windows are skipped.
+    window capture returns, title bar included, compositor shadow trimmed).
+    Override-redirect windows (menus, tooltips, our own bypass-WM overlays) and
+    unmapped/tiny windows are skipped.
     """
     try:
         from Xlib import display as _disp
@@ -1114,7 +1157,11 @@ def list_visible_windows():
                 x, y = -tc.x, -tc.y
                 if geo.width < 30 or geo.height < 30:
                     continue
-                out.append((int(x), int(y), int(geo.width), int(geo.height)))
+                rect = _trim_shadow((int(x), int(y), int(geo.width), int(geo.height)),
+                                    _window_shadow_extents(d, win))
+                if rect[2] < 30 or rect[3] < 30:
+                    continue                # shadow was most of the window
+                out.append(rect)
             except Exception:                               # dead window mid-enumeration
                 continue
         d.close()
